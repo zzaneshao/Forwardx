@@ -2,6 +2,7 @@ import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { createQueryCache } from "../queryCache";
+import { displayQueries } from "../displayQueryCache";
 import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
 import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
 import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
@@ -16,6 +17,7 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { EXIT_GROUP_STRATEGIES } from "../../shared/exitStrategy";
 import { MAX_FORWARD_GROUP_MEMBERS } from "../../shared/forwardGroup";
 import { portForwardToolPreflight } from "../portForwardToolPreflight";
+import { appendPanelLog } from "../_core/panelLogger";
 import { getLinkAccessScope, visibleForwardGroupMemberIds, type LinkAccessScope } from "../linkAccessView";
 import {
   buildForwardGroupAvailabilitySummaryIndex,
@@ -206,10 +208,10 @@ export const forwardGroupsRouter = router({
       const visibleItems = accessScope
         ? db.filterForwardGroupFieldsForUse(hydratedItems, accessScope)
         : hydratedItems;
-      const trafficByGroupId = await db.getForwardGroupTrafficSummaries(
-        visibleItems.map((group: any) => Number(group.id)),
-        ctx.user.role === "admin" ? undefined : ctx.user.id,
-      );
+      const visibleIds = visibleItems.map((group: any) => Number(group.id)).sort((a, b) => a - b);
+      const trafficByGroupId = await displayQueries.get(ctx.user, "groups.traffic",
+        [visibleIds, Math.floor((Date.now() + 8 * 3600000) / 86400000)],
+        () => db.getForwardGroupTrafficSummaries(visibleIds, ctx.user.role === "admin" ? undefined : ctx.user.id));
       const items = visibleItems.map((group: any) => ({
         ...group,
         trafficSummary: trafficByGroupId.get(Number(group.id)),
@@ -341,6 +343,14 @@ export const forwardGroupsRouter = router({
       await db.reorderForwardGroupMembers(input.groupId, input.memberIds);
       await db.runForwardGroupFailover(input.groupId, { forcePriority: true, forceSync: true });
       return { success: true };
+    })),
+
+  resetTraffic: adminProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => withKeyedTaskLock(`forward-group:${input.id}`, async () => {
+      const result = await db.resetPortForwardResourceTraffic(input.id);
+      appendPanelLog("info", `[ResourceTraffic] reset group=${input.id} actor=${ctx.user.id} rules=${result.ruleCount} scope=display-only`);
+      return result;
     })),
 
   sync: adminProcedure

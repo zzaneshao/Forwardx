@@ -82,6 +82,10 @@ jobs:
           pnpm check:versions
           pnpm test:release-notes
           pnpm test:ui
+          pnpm test:globe-ui
+          pnpm test:list-settings
+          pnpm test:resource-traffic
+          pnpm test:security-boundaries
           pnpm test:login-ui
           pnpm test:startup
           pnpm test:support
@@ -95,12 +99,17 @@ jobs:
           pnpm test:google-auth
           pnpm test:port-access-limits
           pnpm test:rule-groups
+          pnpm test:rule-batch
+          pnpm test:rule-tasks
+          pnpm test:ai-models
           pnpm test:plan-display
           pnpm test:host-deletion
           pnpm test:host-notifications
           pnpm test:user-selection
           pnpm test:operations
           pnpm test:payments
+          pnpm test:product-stock
+          pnpm test:performance
           pnpm test:plugin-bbr
           pnpm exec tsc --noEmit
           pnpm build

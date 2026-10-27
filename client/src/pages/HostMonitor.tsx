@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { pollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { trpc } from "@/lib/trpc";
 import { isMonitorNotFound, latestMonitorMetric, monitorLatencyYMax, PUBLIC_MONITOR_REFRESH_OPTIONS } from "@/lib/publicMonitor";
 import {
@@ -358,6 +359,7 @@ function PublicHostCard({
 
   return (
     <Card
+      hoverable={!!onSelect}
       role={onSelect ? "button" : undefined}
       tabIndex={onSelect ? 0 : undefined}
       onClick={() => onSelect?.(host)}
@@ -368,7 +370,7 @@ function PublicHostCard({
           onSelect(host);
         }
       }}
-      className={`${cardMinHeightClass} border-border/40 bg-card/70 backdrop-blur-md transition-[border-color,background-color,box-shadow,transform] ${onSelect ? "cursor-pointer hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-lg hover:shadow-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : ""} ${isOnline ? "hover:border-border/70" : "bg-muted/35 text-muted-foreground"}`}
+      className={`${cardMinHeightClass} border-border/40 bg-card/70 backdrop-blur-md transition-[border-color,background-color,box-shadow,transform] ${onSelect ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : ""} ${isOnline ? "hover:border-border/70" : "bg-muted/35 text-muted-foreground"}`}
     >
       <CardContent className={`${compact ? "space-y-2" : "space-y-3"} ${cardPaddingClass}`}>
         <div className={`rounded-md border border-border/40 bg-background/35 ${sectionPaddingClass}`}>
@@ -725,7 +727,7 @@ function HostMonitorDetail({
     {
       enabled: hostId > 0,
       ...PUBLIC_MONITOR_REFRESH_OPTIONS,
-      refetchInterval: pollingInterval("slow", hostId > 0),
+      refetchInterval: adaptivePollingInterval(pollingInterval("slow", hostId > 0)),
     },
   );
   const detailHost = host || detail.data?.host;
@@ -932,7 +934,7 @@ export default function HostMonitor() {
     { path },
     {
       ...PUBLIC_MONITOR_REFRESH_OPTIONS,
-      refetchInterval: pollingInterval("active"),
+      refetchInterval: adaptivePollingInterval(pollingInterval("active")),
     },
   );
   const metricsByHostId = useMemo(() => {

@@ -248,6 +248,7 @@ export const hosts = table("hosts", {
   preferredIpv6: text("preferredIpv6"),
   hostType: varchar("hostType", { length: 32 }).notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
+  agentInstallationId: varchar("agentInstallationId", { length: 64 }),
   // 用户自定义的入口 IP/域名，为空时回退使用 ip
   entryIp: text("entryIp"),
   // 隧道链路使用的内网/专用入口地址（可选）
@@ -615,6 +616,14 @@ export const tunnelExitNodes = table("tunnel_exit_nodes", {
 export type TunnelExitNode = typeof tunnelExitNodes.$inferSelect;
 export type InsertTunnelExitNode = typeof tunnelExitNodes.$inferInsert;
 
+// Retain superseded identities so an old machine cannot reclaim a Token on restart.
+export const agentInstallations = table("agent_installations", {
+  id: serial("id"),
+  hostId: int("hostId").notNull(),
+  installationId: varchar("installationId", { length: 64 }).notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+
 export const tunnelHops = table("tunnel_hops", {
   id: serial("id"),
   tunnelId: int("tunnelId").notNull(),
@@ -706,6 +715,19 @@ export const forwardRuleTrafficCounters = table("forward_rule_traffic_counters",
 });
 export type ForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferSelect;
 export type InsertForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferInsert;
+
+export const resourceTrafficBaselines = table("resource_traffic_baselines", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  hostId: int("hostId").notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  dailyIn: bigint("dailyIn", { mode: "number" }).notNull().default(0),
+  dailyOut: bigint("dailyOut", { mode: "number" }).notNull().default(0),
+  resetDay: epoch("resetDay").notNull(),
+  resetAt: epoch("resetAt").notNull(),
+});
 
 export const trafficStats = table("traffic_stats", {
   id: serial("id"),
@@ -946,6 +968,7 @@ export const paymentOrders = table("payment_orders", {
   subscriptionId: int("subscriptionId"),
   discountCodeId: int("discountCodeId"),
   discountConsumed: boolean("discountConsumed").notNull().default(false),
+  stockReserved: boolean("stockReserved").notNull().default(false),
   discountAmountCents: bigint("discountAmountCents", { mode: "number" }).notNull().default(0),
   clientIp: text("clientIp"),
   rawNotify: text("rawNotify"),
@@ -965,6 +988,8 @@ export const subscriptionPlans = table("subscription_plans", {
   id: serial("id"),
   name: text("name").notNull(),
   description: text("description"),
+  stockLimit: int("stockLimit").notNull().default(0),
+  stockUsed: int("stockUsed").notNull().default(0),
   priceCents: bigint("priceCents", { mode: "number" }).notNull().default(0),
   currency: varchar("currency", { length: 16 }).notNull().default("CNY"),
   durationDays: int("durationDays").notNull().default(30),
@@ -1084,6 +1109,9 @@ export type InsertBalanceTransaction = typeof balanceTransactions.$inferInsert;
 export const trafficBillingConfigs = table("traffic_billing_configs", {
   id: serial("id"),
   sortOrder: int("sortOrder").notNull().default(0),
+  name: varchar("name", { length: 255 }).notNull().default(""),
+  stockLimit: int("stockLimit").notNull().default(0),
+  maxRulesPerUser: int("maxRulesPerUser").notNull().default(0),
   resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel | forward_group
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),

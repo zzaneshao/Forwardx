@@ -9,7 +9,9 @@ import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/p
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { dashboardSummaries } from "../backgroundSummaryCache";
+import { assertRuleStock } from "./productStockRepository";
 import { replacePersonalRuleGroups, withPersonalRuleGroupLock } from "./ruleGroupRepository";
+import type { PersonalRuleGroupChangeFilter } from "../../shared/ruleGroups";
 
 async function invalidateRuleDashboardSummaries(rule: any) {
   if (!rule) return;
@@ -106,6 +108,7 @@ export type ForwardRuleListQuery = PageRequest & {
   ownerUserId?: number;
   personalGroupId?: number | null;
   personalGroupOwnerId?: number;
+  personalGroupChange?: PersonalRuleGroupChangeFilter;
   /** Root resources whose related metadata may participate in user search. */
   searchVisibleHostIds?: number[];
   searchVisibleTunnelIds?: number[];
@@ -314,6 +317,27 @@ function buildForwardRuleSqlFilter(
       conditions.push((input.personalGroupId === 0 ? "NOT EXISTS (" : "EXISTS (") + membership + (input.personalGroupId === 0 ? ")" : " AND " + ruleColumn("pm", "groupId") + " = ?)") );
       params.push(personalOwner);
       if (input.personalGroupId !== 0) params.push(input.personalGroupId);
+    }
+  }
+
+  if (input.personalGroupChange) {
+    const personalOwner = Number(input.personalGroupOwnerId || 0);
+    const groupIds = normalizeForwardRuleIds(input.personalGroupChange.groupIds);
+    if (personalOwner <= 0 || !groupIds.length) conditions.push("1 = 0");
+    else {
+      // Apply eligibility before pagination so sparse memberships do not
+      // produce empty pages or inaccurate totals. Scope both sides to self.
+      conditions.push(ruleColumn("r", "userId") + " = ?");
+      params.push(personalOwner);
+      const selected = inList(groupIds);
+      const membership = " FROM " + quoteIdentifier("rule_group_members") + " pm INNER JOIN " + quoteIdentifier("rule_groups") + " pg ON " + ruleColumn("pg", "id") + " = " + ruleColumn("pm", "groupId") + " AND " + ruleColumn("pg", "userId") + " = " + ruleColumn("pm", "userId") + " WHERE " + ruleColumn("pm", "ruleId") + " = " + ruleColumn("r", "id") + " AND " + ruleColumn("pm", "userId") + " = ? AND " + ruleColumn("pm", "groupId") + " IN " + selected.sql;
+      if (input.personalGroupChange.mode === "remove") {
+        conditions.push("EXISTS (SELECT 1" + membership + ")");
+        params.push(personalOwner, ...selected.params);
+      } else {
+        conditions.push("(SELECT COUNT(DISTINCT " + ruleColumn("pm", "groupId") + ")" + membership + ") < ?");
+        params.push(personalOwner, ...selected.params, groupIds.length);
+      }
     }
   }
 
@@ -1080,13 +1104,14 @@ export async function createForwardRule(rule: InsertForwardRule & { personalGrou
   if (payload.sortOrder === undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId) {
     payload.sortOrder = await nextForwardRuleSortOrder(Number(payload.userId || 0), await forwardRuleCategoryForPayload(payload));
   }
+  const insert = async () => { await assertRuleStock(payload); return insertAndGetId("forward_rules", payload); };
   const id = personalGroupIds !== undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId
     ? await withPersonalRuleGroupLock(Number(payload.userId), () => withDatabaseTransaction(async () => {
-      const id = await insertAndGetId("forward_rules", payload);
+      const id = await insert();
       await replacePersonalRuleGroups(Number(payload.userId), id, personalGroupIds);
       return id;
     }))
-    : await insertAndGetId("forward_rules", payload);
+    : await withDatabaseTransaction(insert);
   const created = await getForwardRuleById(id).catch(() => undefined);
   await invalidateRuleDashboardSummaries(created);
   await recordConfigAuditEvent({ resourceType: "forward_rule", resourceId: id, hostId: Number((created as any)?.hostId || 0), action: "create", after: created });
@@ -1138,7 +1163,21 @@ export async function updateForwardRule(id: number, input: Partial<InsertForward
   const { personalGroupIds, ...data } = input;
   const audit = shouldAuditConfigPatch(data as any);
   const before = audit ? await getForwardRuleById(id).catch(() => undefined) : undefined;
-  const write = async () => (await getDb())!.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  const save = async () => (await getDb())!.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  const stockKeys = ["userId", "hostId", "tunnelId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "pendingDelete"] as const;
+  const changesStock = stockKeys.some((key) => Object.hasOwn(data, key));
+  const write = async () => changesStock ? withDatabaseTransaction(async () => {
+    const expected = await getForwardRuleById(id);
+    if (!expected) return;
+    // Acquire product locks before rule locks, consistently with creates.
+    await assertRuleStock({ ...expected, ...data }, expected);
+    const q = quoteIdentifier;
+    const [current] = await queryRaw<any>(`SELECT * FROM ${q("forward_rules")} WHERE ${q("id")} = ?${getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE"}`, [id]);
+    // A stale MySQL snapshot must not turn a concurrent resource move into
+    // an unchecked overwrite. No writes have happened yet; safely retry.
+    if (!current || stockKeys.some(key => Number(current[key] || 0) !== Number((expected as any)[key] || 0))) throw new Error("规则已变更，请刷新后重试");
+    return save();
+  }) : save();
   if (personalGroupIds !== undefined) {
     const owner = before || await getForwardRuleById(id);
     if (!owner) throw new Error("规则不存在");
@@ -1235,6 +1274,7 @@ async function finalizeForwardRuleDeleteInTransaction(id: number) {
   if (retained.length) return;
   await db.delete(ruleGroupMembers).where(eq(ruleGroupMembers.ruleId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
+  await executeRaw(`DELETE FROM ${quoteIdentifier("resource_traffic_baselines")} WHERE ${quoteIdentifier("ruleId")} = ?`, [id]);
   await db.update(forwardGroupMembers).set({
     ruleId: null,
     updatedAt: nowDate(),

@@ -68,7 +68,18 @@ jobs:
         run: pnpm build
 
       - name: Run panel tests
-        run: pnpm test:server
+        run: |
+          pnpm test:product-stock
+          pnpm test:performance
+          pnpm test:rule-batch
+          pnpm test:rule-tasks
+          pnpm test:ai-models
+          pnpm test:globe-ui
+          pnpm test:list-settings
+          pnpm test:resource-traffic
+          pnpm test:security-boundaries
+          pnpm test:selftest-dispatch
+          pnpm test:server
 
       - name: Run Agent tests and vet
         shell: bash
